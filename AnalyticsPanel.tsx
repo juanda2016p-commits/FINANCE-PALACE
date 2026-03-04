@@ -1,87 +1,101 @@
+import { useMemo } from 'react';
 import { motion } from 'motion/react';
-import { TrendingUp, AlertTriangle, CheckCircle, AlertOctagon } from 'lucide-react';
+import { TrendingUp, Calendar, AlertTriangle } from 'lucide-react';
+import { Transaction, BillingCycle } from '../../types';
+import { getDailyExpenses } from '../../utils/financeEngine';
 
-interface CreditStatusCardProps {
+interface ProjectionsPanelProps {
+  transactions: Transaction[];
+  activeCycle?: BillingCycle;
   currentDebt: number;
-  availableCredit: number;
-  utilizationRate: number;
 }
 
-export default function CreditStatusCard({ currentDebt, availableCredit, utilizationRate }: CreditStatusCardProps) {
-  // Determine zone and color
-  let zone = 'ÓPTIMO';
-  let colorClass = 'text-emerald-400';
-  let bgClass = 'bg-emerald-400/20';
-  let progressColor = 'bg-emerald-400';
-  let Icon = CheckCircle;
+export default function ProjectionsPanel({ transactions, activeCycle, currentDebt }: ProjectionsPanelProps) {
+  const projection = useMemo(() => {
+    if (!activeCycle) return null;
 
-  if (utilizationRate > 50) {
-    zone = 'PELIGRO';
-    colorClass = 'text-red-400';
-    bgClass = 'bg-red-400/20';
-    progressColor = 'bg-red-500';
-    Icon = AlertOctagon;
-  } else if (utilizationRate > 30) {
-    zone = 'RIESGO';
-    colorClass = 'text-orange-400';
-    bgClass = 'bg-orange-400/20';
-    progressColor = 'bg-orange-500';
-    Icon = AlertTriangle;
-  } else if (utilizationRate > 20) {
-    zone = 'PRECAUCIÓN';
-    colorClass = 'text-yellow-400';
-    bgClass = 'bg-yellow-400/20';
-    progressColor = 'bg-yellow-500';
-    Icon = TrendingUp;
+    const today = new Date();
+    const cutoffDate = new Date(activeCycle.cutoffDate);
+    const daysRemaining = Math.max(0, Math.ceil((cutoffDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)));
+    
+    // Get daily average from last 30 days to be more accurate
+    const { average } = getDailyExpenses(transactions);
+    
+    const projectedAdditional = average * daysRemaining;
+    const projectedTotal = currentDebt + projectedAdditional;
+
+    return {
+      daysRemaining,
+      average,
+      projectedTotal,
+      projectedAdditional
+    };
+  }, [transactions, activeCycle, currentDebt]);
+
+  if (!activeCycle || !projection) {
+    return (
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 flex items-center justify-center text-slate-400 h-48">
+        <p>No hay ciclo activo para proyectar.</p>
+      </div>
+    );
   }
 
   return (
-    <div className="bg-gradient-to-br from-indigo-900 to-indigo-800 rounded-2xl p-6 text-white shadow-xl relative overflow-hidden mb-6">
-      {/* Background decoration */}
-      <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full -mr-16 -mt-16 blur-2xl" />
-      <div className="absolute bottom-0 left-0 w-24 h-24 bg-indigo-500/20 rounded-full -ml-12 -mb-12 blur-xl" />
+    <motion.div 
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"
+    >
+      <div className="p-6 border-b border-slate-100 flex justify-between items-center">
+        <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+          <TrendingUp className="w-5 h-5 text-indigo-600" />
+          Proyección de Cierre
+        </h3>
+        <span className="text-xs font-medium bg-indigo-50 text-indigo-700 px-3 py-1 rounded-full">
+          {projection.daysRemaining} días restantes
+        </span>
+      </div>
 
-      <div className="relative z-10">
-        <div className="flex justify-between items-start mb-6">
-          <div>
-            <h3 className="text-indigo-200 text-sm font-medium uppercase tracking-wider mb-1">Deuda Total</h3>
-            <motion.div 
-              key={currentDebt}
-              initial={{ opacity: 0.5, y: 5 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="text-4xl font-bold tracking-tight"
-            >
-              ${currentDebt.toLocaleString()}
-            </motion.div>
-          </div>
-          <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold tracking-wide ${bgClass} ${colorClass} border border-white/10`}>
-            <Icon className="w-3.5 h-3.5" />
-            {zone}
-          </div>
-        </div>
-
+      <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-8">
+        {/* Current Pace */}
         <div className="space-y-4">
           <div>
-            <div className="flex justify-between text-sm mb-2">
-              <span className="text-indigo-200">Utilización de Crédito</span>
-              <span className={`font-bold ${colorClass}`}>{utilizationRate.toFixed(1)}%</span>
-            </div>
-            <div className="h-2 bg-indigo-950/50 rounded-full overflow-hidden border border-white/5">
-              <motion.div 
-                className={`h-full ${progressColor} shadow-[0_0_10px_rgba(255,255,255,0.3)]`}
-                initial={{ width: 0 }}
-                animate={{ width: `${Math.min(utilizationRate, 100)}%` }}
-                transition={{ duration: 1, ease: "easeOut" }}
-              />
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Ritmo de Gasto Actual</p>
+            <div className="text-2xl font-mono font-bold text-slate-900">
+              ${projection.average.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+              <span className="text-sm text-slate-400 font-normal ml-1">/ día</span>
             </div>
           </div>
-
-          <div className="pt-4 border-t border-white/10 flex justify-between items-center">
-            <span className="text-indigo-200 text-sm">Cupo Disponible</span>
-            <span className="font-mono font-medium text-lg">${availableCredit.toLocaleString()}</span>
+          
+          <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 text-sm text-slate-600">
+            <p>
+              Si continúas gastando a este ritmo, acumularás 
+              <strong className="text-slate-900"> ${projection.projectedAdditional.toLocaleString()} </strong>
+              más antes del corte.
+            </p>
           </div>
         </div>
+
+        {/* Projected Result */}
+        <div className="bg-indigo-50 rounded-xl p-5 border border-indigo-100 flex flex-col justify-center items-center text-center">
+          <p className="text-xs font-bold text-indigo-600 uppercase tracking-wider mb-2">Deuda Proyectada al Corte</p>
+          <div className="text-3xl font-mono font-bold text-indigo-900 mb-2">
+            ${projection.projectedTotal.toLocaleString()}
+          </div>
+          
+          {projection.projectedTotal > (activeCycle.targetUtilization || 0) * 1000000 ? ( // Assuming limit is roughly 1M for logic, or just generic warning
+             <div className="flex items-center gap-1 text-xs text-orange-600 font-medium bg-orange-100 px-2 py-1 rounded-md">
+               <AlertTriangle className="w-3 h-3" />
+               Podría superar tu meta
+             </div>
+          ) : (
+             <div className="flex items-center gap-1 text-xs text-emerald-600 font-medium bg-emerald-100 px-2 py-1 rounded-md">
+               <Calendar className="w-3 h-3" />
+               Dentro de lo esperado
+             </div>
+          )}
+        </div>
       </div>
-    </div>
+    </motion.div>
   );
 }

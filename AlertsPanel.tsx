@@ -1,109 +1,179 @@
-import { GoogleGenAI } from "@google/genai";
-import { Category, FinancialContext } from "../types";
+import React, { useState } from 'react';
+import { Plus, Minus, Loader2, CreditCard, Wallet } from 'lucide-react';
+import { categorizeExpense } from '../services/novaService';
+import { Transaction, TransactionType, Category, Account } from '../types';
 
-const API_KEY = process.env.GEMINI_API_KEY;
-
-export interface Message {
-  role: 'user' | 'assistant';
-  content: string;
+interface TransactionFormProps {
+  accounts: Account[];
+  onAddTransaction: (transaction: Omit<Transaction, 'id' | 'date' | 'createdAt'>) => void;
 }
 
-export async function sendMessageToNova(
-  history: Message[],
-  userMessage: string,
-  context: FinancialContext
-): Promise<string> {
-  if (!API_KEY) {
-    console.error("Missing GEMINI_API_KEY");
-    return "Error: API Key no configurada. Por favor configura GEMINI_API_KEY en tu entorno.";
-  }
+export function TransactionForm({ accounts, onAddTransaction }: TransactionFormProps) {
+  const [type, setType] = useState<TransactionType>(TransactionType.CREDIT_CHARGE);
+  const [amount, setAmount] = useState('');
+  const [description, setDescription] = useState('');
+  const [selectedAccountId, setSelectedAccountId] = useState(accounts[0]?.id || '');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const ai = new GoogleGenAI({ apiKey: API_KEY });
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!amount || !selectedAccountId) return;
 
-  const systemPrompt = `Eres NOVA, asesora de crédito personal experta para ${context.userName}.
-ESTADO ACTUAL (${new Date().toLocaleDateString()}):
-  Deuda tarjeta: $${context.currentDebt} (${context.utilizationRate.toFixed(1)}% de $${context.creditLimit})
-  Fase del ciclo: ${context.cyclePhase} — ${context.cycleMessage}
-  Próximo evento: ${context.nextEventName} en ${context.daysToEvent} días
-  Promedio diario: $${context.dailyAverage}
-  Saldo disponible total: $${context.totalLiquidity}
-Responde siempre en español. Sé concisa y proactiva.
-Si el usuario menciona un gasto, identifica: monto, categoría sugerida, impacto en ciclo.
-
-Funciones de Nova
-•	Responder preguntas sobre el estado financiero del usuario.
-•	Categorizar gastos mencionados en la conversación.
-•	Advertir proactivamente sobre fechas críticas del ciclo.
-•	Simular escenarios ('¿qué pasa si gasto 100k esta semana?').
-•	Celebrar logros crediticios (pago total, ciclo perfecto).`;
-
-  try {
-    const model = "gemini-2.5-flash";
-    
-    // Convert history to Gemini format
-    // Gemini expects 'user' and 'model' roles
-    const chatHistory = history.map(msg => ({
-      role: msg.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: msg.content }]
-    }));
-
-    const chat = ai.chats.create({
-      model: model,
-      history: chatHistory,
-      config: {
-        systemInstruction: systemPrompt,
-      },
-    });
-
-    const result = await chat.sendMessage({ message: userMessage });
-    return result.text || "Lo siento, no pude generar una respuesta.";
-  } catch (error) {
-    console.error("Nova Error:", error);
-    return "Lo siento, tuve un problema al procesar tu mensaje. Verifica tu conexión o API Key.";
-  }
-}
-
-export async function categorizeExpense(description: string): Promise<Category> {
-  // 1. Try simple keyword matching first for speed (Client-side heuristic)
-  const lower = description.toLowerCase();
-  
-  // Fast path for obvious ones
-  if (lower.includes('uber') || lower.includes('gasolina') || lower.includes('texaco')) return Category.GAS;
-  if (lower.includes('netflix') || lower.includes('spotify') || lower.includes('hbo') || lower.includes('youtube')) return Category.SUBSCRIPTIONS;
-  if (lower.includes('rappi') || lower.includes('restaurante') || lower.includes('mcdonalds')) return Category.DINING_OUT;
-  if (lower.includes('universidad') || lower.includes('fotocopia')) return Category.FOOD_UNIVERSITY;
-  if (lower.includes('regalo')) return Category.GIFTS;
-  if (lower.includes('weed')) return Category.WEED;
-  if (lower.includes('cerveza') || lower.includes('licor') || lower.includes('bar')) return Category.ALCOHOL;
-
-  // 2. Use Gemini for intelligent categorization if available
-  if (API_KEY) {
+    setIsSubmitting(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: API_KEY });
-      const prompt = `
-        Categorize the following expense description into exactly one of these categories:
-        ${Object.values(Category).join(', ')}
-        
-        Description: "${description}"
-        
-        Return ONLY the category name exactly as listed above. If unsure, return "${Category.OTHER}".
-      `;
+      let category = Category.OTHER;
       
-      const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: prompt,
-      });
-      
-      const responseText = response.text?.trim();
-      
-      // Validate that the response is a valid category
-      if (responseText && Object.values(Category).includes(responseText as Category)) {
-        return responseText as Category;
+      // Auto-categorize only for expenses/charges
+      if (type === TransactionType.EXPENSE || type === TransactionType.CREDIT_CHARGE) {
+        category = await categorizeExpense(description || 'Gasto general');
+      } else if (type === TransactionType.CREDIT_PAYMENT) {
+        category = Category.LOAN_PAYMENT; // Or specific payment category
+      } else if (type === TransactionType.INCOME) {
+        category = Category.INCOME;
       }
-    } catch (error) {
-      console.warn("AI categorization failed, falling back to OTHER", error);
-    }
-  }
 
-  return Category.OTHER;
+      const isCreditCardExpense = type === TransactionType.CREDIT_CHARGE;
+      
+      // Determine exclusion from daily average
+      const isExcluded = [
+        Category.SUBSCRIPTIONS, 
+        Category.GAS, 
+        Category.CLOTHING, 
+        Category.GIFTS, 
+        Category.UNEXPECTED
+      ].includes(category);
+
+      onAddTransaction({
+        accountId: selectedAccountId,
+        type,
+        amount: parseFloat(amount),
+        description: description || 'Movimiento',
+        category,
+        isCreditCardExpense,
+        isExcludedFromDailyAvg: isExcluded
+      });
+
+      // Reset form
+      setAmount('');
+      setDescription('');
+      // Keep type and account same for convenience
+    } catch (error) {
+      console.error("Error adding transaction:", error);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const selectedAccount = accounts.find(a => a.id === selectedAccountId);
+
+  return (
+    <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+      <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
+        <Plus className="w-5 h-5 text-indigo-600" />
+        Registrar Movimiento
+      </h3>
+
+      <div className="flex gap-2 mb-4 overflow-x-auto pb-2">
+        <button
+          type="button"
+          onClick={() => setType(TransactionType.CREDIT_CHARGE)}
+          className={`whitespace-nowrap py-2 px-4 rounded-lg text-xs font-medium transition-colors ${
+            type === TransactionType.CREDIT_CHARGE
+              ? 'bg-purple-100 text-purple-700 ring-2 ring-purple-500 ring-offset-1' 
+              : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
+          }`}
+        >
+          Compra Crédito
+        </button>
+        <button
+          type="button"
+          onClick={() => setType(TransactionType.CREDIT_PAYMENT)}
+          className={`whitespace-nowrap py-2 px-4 rounded-lg text-xs font-medium transition-colors ${
+            type === TransactionType.CREDIT_PAYMENT
+              ? 'bg-green-100 text-green-700 ring-2 ring-green-500 ring-offset-1' 
+              : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
+          }`}
+        >
+          Pagar Tarjeta
+        </button>
+        <button
+          type="button"
+          onClick={() => setType(TransactionType.EXPENSE)}
+          className={`whitespace-nowrap py-2 px-4 rounded-lg text-xs font-medium transition-colors ${
+            type === TransactionType.EXPENSE
+              ? 'bg-red-100 text-red-700 ring-2 ring-red-500 ring-offset-1' 
+              : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
+          }`}
+        >
+          Gasto Débito
+        </button>
+      </div>
+
+      <form onSubmit={handleSubmit} className="space-y-4">
+        {/* Account Selection */}
+        <div>
+          <label className="block text-xs font-medium text-gray-500 uppercase mb-1">Cuenta</label>
+          <select 
+            value={selectedAccountId}
+            onChange={(e) => setSelectedAccountId(e.target.value)}
+            className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none text-sm"
+          >
+            {accounts.map(acc => (
+              <option key={acc.id} value={acc.id}>
+                {acc.bankName} ({acc.accountType === 'credit' ? 'Crédito' : 'Débito'})
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium text-gray-500 uppercase mb-1">Monto</label>
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 font-medium">$</span>
+            <input
+              type="number"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              placeholder="0"
+              className="w-full pl-8 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all font-mono text-lg"
+              required
+            />
+          </div>
+        </div>
+
+        {(type === TransactionType.EXPENSE || type === TransactionType.CREDIT_CHARGE) && (
+          <div>
+            <label className="block text-xs font-medium text-gray-500 uppercase mb-1">Descripción</label>
+            <input
+              type="text"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Ej: Almuerzo, Uber, Netflix..."
+              className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all"
+              required
+            />
+          </div>
+        )}
+
+        <button
+          type="submit"
+          disabled={isSubmitting || !amount}
+          className={`w-full py-3 px-4 rounded-xl font-bold text-white shadow-md transition-all flex items-center justify-center gap-2 ${
+            isSubmitting 
+              ? 'bg-gray-400 cursor-not-allowed' 
+              : 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200'
+          }`}
+        >
+          {isSubmitting ? (
+            <>
+              <Loader2 className="w-5 h-5 animate-spin" />
+              Procesando...
+            </>
+          ) : (
+            'Registrar'
+          )}
+        </button>
+      </form>
+    </div>
+  );
 }

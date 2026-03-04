@@ -1,13 +1,13 @@
-export { default as TransactionForm } from './TransactionForm';
-export { default as CreditStatusCard } from './CreditStatusCard';
-export { default as CycleBanner } from './CycleBanner';
-export { default as AccountsSummary } from './AccountsSummary';
-export { default as TransactionList } from './TransactionList';
-export { default as ProjectionsPanel } from './ProjectionsPanel';
-export { default as ScoreImpactCard } from './ScoreImpactCard';
-export { default as AlertsPanel } from '../shared/AlertsPanel';
-export { default as NovaChatPanel } from './NovaChatPanel';
-export { default as CalendarCard } from './CalendarCard';
-export { default as CreditCardTimeline } from './CreditCardTimeline';
-export { AnalyticsPanel } from './AnalyticsPanel';
-export { UnifiedCreditPanel } from './UnifiedCreditPanel';
+import { motion } from 'motion/react';
+
+export default function CalendarCard() {
+  return (
+    <motion.div 
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 flex items-center justify-center text-slate-400"
+    >
+      <p>Calendario (Próximamente)</p>
+    </motion.div>
+  );
+}

@@ -1,321 +1,533 @@
-import { useState, useEffect } from 'react';
-import { OnboardingFlow } from './components/onboarding';
 import { 
-  CreditStatusCard,
-  AccountsSummary,
-  TransactionForm,
-  TransactionList,
-  AnalyticsPanel,
-  ProjectionsPanel,
-  AlertsPanel,
-  CalendarCard,
-  NovaChatPanel,
-  UnifiedCreditPanel
-} from './components/dashboard';
-import { useFinancials } from './hooks/useFinancials';
-import { getCyclePhase, getCycleStatus } from './utils/financeEngine';
-import { Account, Transaction, BillingCycle, FinanceState, FinancialContext, Alert } from './types';
-import { supabase } from './services/supabaseClient';
+  Transaction, 
+  Account, 
+  BillingCycle, 
+  TransactionType, 
+  Category, 
+  CyclePhase, 
+  Alert, 
+  AlertLevel,
+  CycleStatus,
+  FinancialSummary
+} from '../types';
 
-function App() {
-  // Global State
-  const [accounts, setAccounts] = useState<Account[]>([]);
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [cycles, setCycles] = useState<BillingCycle[]>([]);
-  const [dismissedAlerts, setDismissedAlerts] = useState<string[]>([]);
-  const [loading, setLoading] = useState(true);
-  
-  // Derived State via Hook
-  const financeState: FinanceState = { accounts, transactions, cycles };
-  const { summary, alerts } = useFinancials(financeState);
+// --- Constants ---
+export const NON_DAILY_CATEGORIES = [
+  Category.SUBSCRIPTIONS,
+  Category.GAS,
+  Category.CLOTHING,
+  Category.GIFTS,
+  Category.UNEXPECTED,
+  Category.OTHER,
+  Category.LOAN_PAYMENT
+];
 
-  // Initial Data Fetch
-  useEffect(() => {
-    fetchData();
-  }, []);
+// --- Pure Functions ---
 
-  const fetchData = async () => {
-    try {
-      setLoading(true);
-      
-      const { data: accountsData, error: accountsError } = await supabase.from('accounts').select('*');
-      if (accountsError) throw accountsError;
-      
-      const { data: transactionsData, error: transactionsError } = await supabase.from('transactions').select('*');
-      if (transactionsError) throw transactionsError;
-      
-      const { data: cyclesData, error: cyclesError } = await supabase.from('billing_cycles').select('*');
-      if (cyclesError) throw cyclesError;
+/**
+ * Calculates the current phase of the credit cycle based on Nu Bank logic.
+ */
+export function getCyclePhase(today: Date, cutoffDay: number = 18, paymentDueDay: number = 10): CyclePhase {
+  const day = today.getDate();
 
-      if (accountsData) {
-        setAccounts(accountsData.map((a: any) => ({
-          ...a,
-          createdAt: new Date(a.createdAt)
-        })));
-      }
-
-      if (transactionsData) {
-        setTransactions(transactionsData.map((t: any) => ({
-          ...t,
-          date: new Date(t.date),
-          createdAt: new Date(t.createdAt)
-        })));
-      }
-
-      if (cyclesData) {
-        setCycles(cyclesData.map((c: any) => ({
-          ...c,
-          startDate: new Date(c.startDate),
-          cutoffDate: new Date(c.cutoffDate),
-          paymentDueDate: new Date(c.paymentDueDate)
-        })));
-      }
-    } catch (error) {
-      console.error('Error fetching data from Supabase:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleDismissAlert = (id: string) => {
-    setDismissedAlerts(prev => [...prev, id]);
-  };
-
-  const handleAlertAction = (alertItem: Alert) => {
-    console.log('Action triggered:', alertItem.action);
-    // Implement specific actions here based on alert.action.type
-    if (alertItem.action?.type === 'PAY') {
-      // Navigate to payment form or pre-fill transaction
-      console.log('Redirigiendo a pago...');
-    }
-  };
-
-  // Helper to generate initial cycles (returns them instead of setting state)
-  const generateInitialCycles = (newAccounts: Account[]): BillingCycle[] => {
-    const newCycles: BillingCycle[] = [];
-    const today = new Date();
-
-    newAccounts.forEach(acc => {
-      if (acc.accountType === 'credit') {
-        const cutoffDay = acc.cutoffDay || 18;
-        const paymentDueDay = acc.paymentDueDay || 10;
-        
-        let startDate = new Date(today.getFullYear(), today.getMonth(), cutoffDay - 30); // Approx
-        let cutoffDate = new Date(today.getFullYear(), today.getMonth(), cutoffDay);
-        
-        if (today.getDate() > cutoffDay) {
-          // We are in a new cycle
-          startDate = cutoffDate;
-          cutoffDate = new Date(today.getFullYear(), today.getMonth() + 1, cutoffDay);
-        }
-
-        // Payment due date is usually next month after cutoff
-        const paymentDueDate = new Date(cutoffDate.getFullYear(), cutoffDate.getMonth(), paymentDueDay);
-        if (paymentDueDay < cutoffDay) {
-           paymentDueDate.setMonth(paymentDueDate.getMonth() + 1);
-        }
-
-        newCycles.push({
-          id: crypto.randomUUID(),
-          accountId: acc.id,
-          startDate,
-          cutoffDate,
-          paymentDueDate,
-          openingBalance: 0,
-          targetUtilization: 0.3, // Default 30%
-          totalCharges: 0,
-          totalPayments: 0,
-          status: 'open'
-        });
-      }
-    });
-    
-    return newCycles;
-  };
-
-  const handleOnboardingComplete = async (newAccounts: Account[]) => {
-    try {
-      // 1. Insert Accounts
-      const { error: accountsError } = await supabase.from('accounts').insert(newAccounts);
-      if (accountsError) throw accountsError;
-
-      // 2. Generate and Insert Cycles
-      const newCycles = generateInitialCycles(newAccounts);
-      if (newCycles.length > 0) {
-        const { error: cyclesError } = await supabase.from('billing_cycles').insert(newCycles);
-        if (cyclesError) throw cyclesError;
-      }
-
-      // 3. Update Local State
-      setAccounts(newAccounts);
-      setCycles(prev => [...prev, ...newCycles]);
-    } catch (error) {
-      console.error('Error saving onboarding data:', error);
-    }
-  };
-
-  const handleAddTransaction = async (tx: Transaction) => {
-    try {
-      // 1. Insert Transaction
-      const { error: txError } = await supabase.from('transactions').insert(tx);
-      if (txError) throw txError;
-
-      // 2. Update Local State (Optimistic for UI responsiveness)
-      setTransactions(prev => [tx, ...prev]);
-      
-      // 3. Calculate and Update Account Balances
-      // We need to update the account balance in Supabase.
-      // We'll iterate through accounts to find the one to update and calculate the new balance.
-      
-      const accountToUpdate = accounts.find(a => a.id === tx.accountId);
-      let targetAccountToUpdate = tx.targetAccountId ? accounts.find(a => a.id === tx.targetAccountId) : null;
-      
-      const updates: PromiseLike<any>[] = [];
-
-      if (accountToUpdate) {
-        let newBalance = accountToUpdate.currentBalance;
-        
-        if (accountToUpdate.accountType === 'debit') {
-          if (tx.type === 'EXPENSE' || tx.type === 'LOAN_GIVEN' || tx.type === 'CREDIT_PAYMENT') {
-            newBalance -= tx.amount;
-          } else if (tx.type === 'INCOME' || tx.type === 'LOAN_RECEIVED') {
-            newBalance += tx.amount;
-          }
-        } else if (accountToUpdate.accountType === 'credit') {
-          if (tx.type === 'CREDIT_CHARGE') {
-            newBalance += tx.amount; // Debt increases
-          } else if (tx.type === 'CREDIT_PAYMENT') {
-             newBalance -= tx.amount;
-          }
-        }
-
-        updates.push(supabase.from('accounts').update({ currentBalance: newBalance }).eq('id', accountToUpdate.id).then());
-        
-        // Update local state for this account
-        setAccounts(prev => prev.map(a => a.id === accountToUpdate.id ? { ...a, currentBalance: newBalance } : a));
-      }
-
-      if (targetAccountToUpdate) {
-        const newTargetBalance = targetAccountToUpdate.currentBalance - tx.amount;
-        updates.push(supabase.from('accounts').update({ currentBalance: newTargetBalance }).eq('id', targetAccountToUpdate.id).then());
-
-        // Update local state for target account
-        setAccounts(prev => prev.map(a => a.id === targetAccountToUpdate!.id ? { ...a, currentBalance: newTargetBalance } : a));
-      }
-
-      await Promise.all(updates);
-
-    } catch (error) {
-      console.error('Error adding transaction:', error);
-      // Rollback local state if needed (omitted for brevity, but recommended in prod)
-    }
-  };
-
-  if (loading) {
-    return <div className="min-h-screen flex items-center justify-center bg-slate-50">Cargando datos...</div>;
+  // PAY: Days (paymentDueDay - 2) to paymentDueDay (e.g., 8-10)
+  if (day >= paymentDueDay - 2 && day <= paymentDueDay) {
+    return CyclePhase.PAY;
   }
 
-  // If no accounts, show onboarding
-  if (accounts.length === 0) {
-    return <OnboardingFlow onComplete={handleOnboardingComplete} />;
+  // SPEND: Days (paymentDueDay + 1) to (cutoffDay - 1) (e.g., 11-17)
+  // Wait, spec says ADJUST is cutoffDay - 1. So SPEND is 11 to 16.
+  if (day > paymentDueDay && day < cutoffDay - 1) {
+    return CyclePhase.SPEND;
   }
 
-  // Identify active cycle (first credit account's open cycle for now, or aggregate?)
-  // The UI shows "CycleBanner" which implies a single main cycle or we show one per card?
-  // "CycleBanner (fase actual del ciclo)" implies a global context or the primary card.
-  // Let's pick the first active credit cycle.
-  const activeCycle = cycles.find(c => c.status === 'open');
-
-  // Calculate dynamic phase info for Context
-  let cyclePhaseStr = "Sin ciclo";
-  let cycleMessageStr = "No hay tarjeta activa";
-  
-  if (activeCycle) {
-      const today = new Date();
-      const account = accounts.find(a => a.id === activeCycle.accountId);
-      if (account) {
-          const phase = getCyclePhase(today, account.cutoffDay, account.paymentDueDay);
-          const daysRemaining = Math.max(0, Math.ceil((new Date(activeCycle.cutoffDate).getTime() - today.getTime()) / (1000 * 60 * 60 * 24)));
-          const status = getCycleStatus(phase, daysRemaining);
-          
-          cyclePhaseStr = status.phase;
-          cycleMessageStr = status.message;
-      }
+  // ADJUST: Day (cutoffDay - 1) (e.g., 17)
+  if (day === cutoffDay - 1) {
+    return CyclePhase.ADJUST;
   }
 
-  const totalCreditLimit = accounts.filter(a => a.accountType === 'credit').reduce((sum, a) => sum + (a.creditLimit || 0), 0);
-  const utilizationRate = totalCreditLimit > 0 ? (summary.totalDebt / totalCreditLimit) * 100 : 0;
+  // CUTOFF: Day cutoffDay (e.g., 18)
+  if (day === cutoffDay) {
+    return CyclePhase.CUTOFF;
+  }
 
-  const userName = "Usuario";
-
-  const financialContext: FinancialContext = {
-    userName: userName,
-    currentDebt: summary.totalDebt,
-    utilizationRate,
-    creditLimit: totalCreditLimit,
-    cyclePhase: cyclePhaseStr,
-    cycleMessage: cycleMessageStr,
-    nextEventName: "Corte",
-    daysToEvent: activeCycle ? Math.ceil((new Date(activeCycle.cutoffDate).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24)) : 0,
-    dailyAverage: summary.dailyAverage,
-    totalLiquidity: summary.totalBalance
-  };
-
-  return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans p-4 lg:p-8">
-      <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
-        
-        {/* Left Column */}
-        <div className="space-y-6">
-          <AccountsSummary accounts={accounts} activeCycles={cycles} />
-          <TransactionForm 
-            accounts={accounts} 
-            activeCycles={cycles} 
-            onAdd={handleAddTransaction} 
-          />
-        </div>
-
-        {/* Center Column */}
-        <div className="space-y-6">
-          {activeCycle && accounts.find(a => a.id === activeCycle.accountId) ? (
-            <UnifiedCreditPanel 
-              account={accounts.find(a => a.id === activeCycle.accountId)!} 
-              cycle={activeCycle}
-              currentDebt={summary.totalDebt}
-              creditLimit={totalCreditLimit}
-              utilizationRate={utilizationRate}
-            />
-          ) : (
-            <CreditStatusCard 
-              currentDebt={summary.totalDebt}
-              availableCredit={totalCreditLimit - summary.totalDebt}
-              utilizationRate={utilizationRate}
-            />
-          )}
-          
-          <AnalyticsPanel transactions={transactions} accounts={accounts} />
-          <ProjectionsPanel 
-            transactions={transactions} 
-            activeCycle={activeCycle} 
-            currentDebt={summary.totalDebt} 
-          />
-        </div>
-
-        {/* Right Column */}
-        <div className="space-y-6">
-          <AlertsPanel 
-            alerts={alerts.filter(a => !dismissedAlerts.includes(a.id))}
-            onDismiss={handleDismissAlert}
-            onAction={handleAlertAction}
-          />
-          <TransactionList transactions={transactions} />
-          <CalendarCard />
-        </div>
-      </div>
-      
-      <NovaChatPanel financialContext={financialContext} />
-    </div>
-  );
+  // CONTROLLED: Rest of days (e.g., 19-7)
+  return CyclePhase.CONTROLLED;
 }
 
-export default App;
+export function getCycleStatus(phase: CyclePhase, daysRemaining: number): CycleStatus {
+  switch (phase) {
+    case CyclePhase.PAY:
+      return {
+        phase,
+        message: "¡Hora de pagar! Evita intereses.",
+        color: "bg-red-100 text-red-700",
+        action: "Pagar Tarjeta",
+        daysRemaining
+      };
+    case CyclePhase.SPEND:
+      return {
+        phase,
+        message: "Uso normal. Mantén el control.",
+        color: "bg-green-100 text-green-700",
+        action: "Ver Gastos",
+        daysRemaining
+      };
+    case CyclePhase.ADJUST:
+      return {
+        phase,
+        message: "Cierre inminente. Ajusta tus gastos.",
+        color: "bg-yellow-100 text-yellow-700",
+        action: "Revisar Presupuesto",
+        daysRemaining
+      };
+    case CyclePhase.CUTOFF:
+      return {
+        phase,
+        message: "Día de corte. No uses la tarjeta hoy si es posible.",
+        color: "bg-orange-100 text-orange-700",
+        action: "Ver Estado de Cuenta",
+        daysRemaining
+      };
+    case CyclePhase.CONTROLLED:
+    default:
+      return {
+        phase,
+        message: "Gasto controlado.",
+        color: "bg-blue-100 text-blue-700",
+        action: "Ver Proyecciones",
+        daysRemaining
+      };
+  }
+}
+
+/**
+ * Calculates credit card metrics.
+ */
+export function calculateCreditMetrics(
+  account: Account, 
+  transactions: Transaction[], 
+  cycle: BillingCycle
+) {
+  // Filter transactions for the current active cycle
+  // In a real app, we'd match billingCycleId. For now, we'll assume transactions passed are relevant or filter by date.
+  // Simplified: Sum charges and payments in the current "open" cycle window.
+  
+  const cycleCharges = transactions
+    .filter(t => t.type === TransactionType.CREDIT_CHARGE && t.accountId === account.id) // Should filter by cycle date range in a real DB
+    .reduce((sum, t) => sum + t.amount, 0);
+
+  const cyclePayments = transactions
+    .filter(t => t.type === TransactionType.CREDIT_PAYMENT && t.accountId === account.id)
+    .reduce((sum, t) => sum + t.amount, 0);
+
+  // Current Debt: Sum of charges - Sum of payments. Min 0.
+  // Note: This logic assumes 'openingBalance' is already accounted for or included in charges/payments logic.
+  // For simplicity in this state-less-ish demo, we'll assume currentDebt is calculated from all relevant history or just current cycle if we reset.
+  // Let's stick to the spec formula: sum(CREDIT_CHARGE) - sum(CREDIT_PAYMENT) of active cycle.
+  // We need to add openingBalance of the cycle to be accurate.
+  
+  const currentDebt = Math.max(0, cycle.openingBalance + cycleCharges - cyclePayments);
+  const availableCredit = (account.creditLimit || 0) - currentDebt;
+  const utilizationRate = account.creditLimit ? (currentDebt / account.creditLimit) * 100 : 0;
+
+  // Utilization Zone
+  let utilizationZone = 'green';
+  if (utilizationRate > 50) utilizationZone = 'red';
+  else if (utilizationRate >= 30) utilizationZone = 'orange';
+  else if (utilizationRate >= 21) utilizationZone = 'yellow';
+
+  // Target Debt
+  const targetDebtAtCutoff = (account.creditLimit || 0) * cycle.targetUtilization;
+  const adjustmentPayment = Math.max(0, currentDebt - targetDebtAtCutoff);
+
+  return {
+    currentDebt,
+    availableCredit,
+    utilizationRate,
+    utilizationZone,
+    targetDebtAtCutoff,
+    adjustmentPayment
+  };
+}
+
+/**
+ * Calculates daily average spending.
+ */
+export function calculateDailyAverage(transactions: Transaction[]): number {
+  const now = new Date();
+  const startOfCurrentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  
+  const dailyExpenses = transactions.filter(t =>
+    (t.type === TransactionType.EXPENSE || t.type === TransactionType.CREDIT_CHARGE) && // Include credit charges in "spending"
+    t.date >= startOfCurrentMonth &&
+    !t.isExcludedFromDailyAvg
+  );
+
+  const total = dailyExpenses.reduce((sum, t) => sum + t.amount, 0);
+  const daysElapsed = Math.max(1, now.getDate());
+
+  return total / daysElapsed;
+}
+
+/**
+ * Calculates projections.
+ */
+export function calculateProjections(
+  currentDebt: number, 
+  dailyAvgCredit: number, 
+  cutoffDate: Date,
+  creditLimit: number
+) {
+  const today = new Date();
+  const daysRemaining = Math.max(0, Math.ceil((cutoffDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)));
+
+  const projectedSpending = dailyAvgCredit * daysRemaining;
+
+  return {
+    daysRemaining,
+    current: {
+      debt: currentDebt + projectedSpending,
+      available: creditLimit - (currentDebt + projectedSpending)
+    },
+    conservative: {
+      debt: currentDebt + (projectedSpending * 1.15),
+      available: creditLimit - (currentDebt + (projectedSpending * 1.15))
+    },
+    optimistic: {
+      debt: currentDebt + (projectedSpending * 0.85),
+      available: creditLimit - (currentDebt + (projectedSpending * 0.85))
+    }
+  };
+}
+
+/**
+ * Generates alerts based on rules.
+ */
+export function generateAlerts(
+  transactions: Transaction[], 
+  dailyAverage: number, 
+  income: number
+): Alert[] {
+  const alerts: Alert[] = [];
+  const now = new Date();
+
+  // 1. Category exceeds 15% of income
+  const expensesByCategory: Record<string, number> = {};
+  transactions.forEach(t => {
+    if ((t.type === TransactionType.EXPENSE || t.type === TransactionType.CREDIT_CHARGE) && t.date.getMonth() === now.getMonth()) {
+      expensesByCategory[t.category] = (expensesByCategory[t.category] || 0) + t.amount;
+    }
+  });
+
+  Object.entries(expensesByCategory).forEach(([category, amount]) => {
+    if (amount > (income * 0.15)) {
+      alerts.push({
+        id: `cat-limit-${category}`,
+        level: AlertLevel.WARNING,
+        title: 'Gasto Alto por Categoría',
+        message: `⚠️ Gasto en ${category} supera el 15% de tu ingreso ($${amount.toLocaleString()}).`
+      });
+    }
+  });
+
+  // 2. Accelerated growth
+  const riskyCategories = [Category.ENTERTAINMENT, Category.ALCOHOL, Category.WEED];
+  riskyCategories.forEach(cat => {
+    if (expensesByCategory[cat] > 100000) {
+       alerts.push({
+        id: `risk-cat-${cat}`,
+        level: AlertLevel.DANGER,
+        title: 'Crecimiento Acelerado',
+        message: `🚨 Crecimiento acelerado detectado en ${cat}.`
+      });
+    }
+  });
+
+  // 3. Daily average check
+  if (dailyAverage > 60000) { // Adjusted threshold
+    alerts.push({
+      id: 'daily-avg-high',
+      level: AlertLevel.WARNING,
+      title: 'Promedio Diario Alto',
+      message: `📊 Tu promedio diario ($${dailyAverage.toLocaleString()}) está alto.`
+    });
+  }
+
+  return alerts;
+}
+
+export function calculateFinancialSummary(
+  accounts: Account[],
+  transactions: Transaction[],
+  cycles: BillingCycle[]
+): FinancialSummary {
+  const totalBalance = accounts
+    .filter(a => a.accountType === 'debit')
+    .reduce((sum, a) => sum + a.currentBalance, 0);
+
+  let totalDebt = 0;
+  
+  // Calculate debt for each credit account based on its active cycle
+  // FIX: Use account.currentBalance as the source of truth for debt.
+  // The previous logic tried to reconstruct it from transactions which caused sync issues.
+  totalDebt = accounts
+    .filter(a => a.accountType === 'credit')
+    .reduce((sum, a) => sum + a.currentBalance, 0);
+
+  const netWorth = totalBalance - totalDebt;
+  
+  const now = new Date();
+  const monthlySpending = transactions
+    .filter(t => (t.type === TransactionType.EXPENSE || t.type === TransactionType.CREDIT_CHARGE) && new Date(t.date).getMonth() === now.getMonth() && new Date(t.date).getFullYear() === now.getFullYear())
+    .reduce((sum, t) => sum + t.amount, 0);
+
+  const dailyAverage = calculateDailyAverage(transactions);
+  
+  const monthlyIncome = transactions
+    .filter(t => t.type === TransactionType.INCOME && new Date(t.date).getMonth() === now.getMonth() && new Date(t.date).getFullYear() === now.getFullYear())
+    .reduce((sum, t) => sum + t.amount, 0);
+    
+  const savingsRate = monthlyIncome > 0 ? ((monthlyIncome - monthlySpending) / monthlyIncome) * 100 : 0;
+
+  return {
+    totalBalance,
+    totalDebt,
+    netWorth,
+    monthlySpending,
+    dailyAverage,
+    savingsRate
+  };
+}
+
+// --- Analytics Functions ---
+
+export function getExpensesByCategory(
+  transactions: Transaction[], 
+  month?: number, 
+  year?: number
+): Record<string, { total: number, percentage: number, byMonth: Record<string, number> }> {
+  const targetDate = new Date();
+  const targetMonth = month !== undefined ? month : targetDate.getMonth();
+  const targetYear = year !== undefined ? year : targetDate.getFullYear();
+
+  // 1. Calculate totals for the target month
+  const currentMonthExpenses: Record<string, number> = {};
+  let totalMonthExpense = 0;
+
+  // 2. Calculate history for all time (for byMonth)
+  const historyByCategory: Record<string, Record<string, number>> = {};
+
+  transactions.forEach(t => {
+    if (t.type !== TransactionType.EXPENSE && t.type !== TransactionType.CREDIT_CHARGE) return;
+    
+    const tDate = new Date(t.date);
+    const tMonth = tDate.getMonth();
+    const tYear = tDate.getFullYear();
+    const monthKey = `${tYear}-${String(tMonth + 1).padStart(2, '0')}`;
+
+    // Add to history
+    if (!historyByCategory[t.category]) historyByCategory[t.category] = {};
+    const amount = Number(t.amount) || 0;
+    historyByCategory[t.category][monthKey] = (historyByCategory[t.category][monthKey] || 0) + amount;
+
+    // Add to current month total if matches
+    if (tMonth === targetMonth && tYear === targetYear) {
+      currentMonthExpenses[t.category] = (currentMonthExpenses[t.category] || 0) + amount;
+      totalMonthExpense += amount;
+    }
+  });
+
+  // 3. Format output
+  const result: Record<string, { total: number, percentage: number, byMonth: Record<string, number> }> = {};
+  
+  Object.keys(currentMonthExpenses).forEach(category => {
+    const total = currentMonthExpenses[category];
+    result[category] = {
+      total,
+      percentage: totalMonthExpense > 0 ? (total / totalMonthExpense) * 100 : 0,
+      byMonth: historyByCategory[category] || {}
+    };
+  });
+
+  // Ensure all categories from history are present even if 0 this month? 
+  // The prompt implies "Categorías del mes", so maybe only active ones. 
+  // But "Tabla con columnas por mes" suggests we might want to see rows for categories that had spend before.
+  // For now, let's stick to categories active in the target month to keep the Pie Chart clean.
+  // If needed, we can iterate historyByCategory keys.
+
+  return result;
+}
+
+export function getDailyExpenses(
+  transactions: Transaction[], 
+  month?: number, 
+  year?: number
+) {
+  const targetDate = new Date();
+  const targetMonth = month !== undefined ? month : targetDate.getMonth();
+  const targetYear = year !== undefined ? year : targetDate.getFullYear();
+
+  const dailyData: Record<number, number> = {};
+  let totalForAvg = 0;
+  let daysForAvg = 0; // Days passed in month or total days if past month
+
+  // Initialize all days of month to 0
+  const daysInMonth = new Date(targetYear, targetMonth + 1, 0).getDate();
+  for (let i = 1; i <= daysInMonth; i++) {
+    dailyData[i] = 0;
+  }
+
+  transactions.forEach(t => {
+    if (t.type !== TransactionType.EXPENSE && t.type !== TransactionType.CREDIT_CHARGE) return;
+    
+    const tDate = new Date(t.date);
+    if (tDate.getMonth() === targetMonth && tDate.getFullYear() === targetYear) {
+      const day = tDate.getDate();
+      const amount = Number(t.amount) || 0;
+      dailyData[day] = (dailyData[day] || 0) + amount;
+
+      // For average calculation (exclude fixed categories)
+      if (!NON_DAILY_CATEGORIES.includes(t.category as Category) && !t.isExcludedFromDailyAvg) {
+        totalForAvg += amount;
+      }
+    }
+  });
+
+  // Calculate Average
+  // If current month, divide by days elapsed. If past, divide by days in month.
+  const now = new Date();
+  const isCurrentMonth = now.getMonth() === targetMonth && now.getFullYear() === targetYear;
+  daysForAvg = isCurrentMonth ? Math.max(1, now.getDate()) : daysInMonth;
+  
+  const average = totalForAvg / daysForAvg;
+
+  // Format for Recharts
+  const chartData = Object.entries(dailyData).map(([day, amount]) => ({
+    day: parseInt(day),
+    amount
+  }));
+
+  // Find top 3 days
+  const topDays = [...chartData]
+    .sort((a, b) => b.amount - a.amount)
+    .slice(0, 3)
+    .map(d => d.day);
+
+  return {
+    dailyData: chartData,
+    average,
+    topDays
+  };
+}
+
+export function getMonthlyComparison(transactions: Transaction[], monthsToLookBack: number = 3) {
+  const history: Record<string, number> = {};
+  const now = new Date();
+
+  // Initialize last X months
+  for (let i = 0; i < monthsToLookBack; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    history[key] = 0;
+  }
+
+  transactions.forEach(t => {
+    if (t.type !== TransactionType.EXPENSE && t.type !== TransactionType.CREDIT_CHARGE) return;
+    
+    const tDate = new Date(t.date);
+    const key = `${tDate.getFullYear()}-${String(tDate.getMonth() + 1).padStart(2, '0')}`;
+    const amount = Number(t.amount) || 0;
+    
+    if (history[key] !== undefined) {
+      history[key] += amount;
+    }
+  });
+
+  return Object.entries(history)
+    .map(([month, amount]) => ({ month, amount }))
+    .sort((a, b) => a.month.localeCompare(b.month));
+}
+
+export function getClosingData(
+  accounts: Account[], 
+  transactions: Transaction[],
+  month?: number,
+  year?: number
+) {
+  const now = new Date();
+  const targetMonth = month !== undefined ? month : now.getMonth();
+  const targetYear = year !== undefined ? year : now.getFullYear();
+  const isHistorical = targetMonth !== now.getMonth() || targetYear !== now.getFullYear();
+
+  // For balances, we only have current state. 
+  // Ideally we would replay transactions to get historical balance, but for now we return current.
+  // We will flag this in the UI.
+  
+  // Calculate metrics for the specific target month
+  const monthlyTransactions = transactions.filter(t => {
+    const d = new Date(t.date);
+    return d.getMonth() === targetMonth && d.getFullYear() === targetYear;
+  });
+
+  const monthlySpending = monthlyTransactions
+    .filter(t => t.type === TransactionType.EXPENSE || t.type === TransactionType.CREDIT_CHARGE)
+    .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+
+  const monthlyIncome = monthlyTransactions
+    .filter(t => t.type === TransactionType.INCOME)
+    .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+
+  // Daily Average for the target month
+  // 1. Filter valid daily expenses
+  const dailyExpensesForAvg = monthlyTransactions.filter(t => 
+    (t.type === TransactionType.EXPENSE || t.type === TransactionType.CREDIT_CHARGE) &&
+    !NON_DAILY_CATEGORIES.includes(t.category as Category) &&
+    !t.isExcludedFromDailyAvg
+  );
+
+  const totalDailyExpense = dailyExpensesForAvg.reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+
+  // 2. Determine divisor
+  let daysDivisor = 1;
+  if (isHistorical) {
+    // Days in that month
+    daysDivisor = new Date(targetYear, targetMonth + 1, 0).getDate();
+  } else {
+    // Days elapsed in current month
+    daysDivisor = Math.max(1, now.getDate());
+  }
+
+  const dailyAverage = totalDailyExpense / daysDivisor;
+
+  // Top 3 Categories for target month
+  const expensesByCat = getExpensesByCategory(transactions, targetMonth, targetYear);
+  const topCategories = Object.entries(expensesByCat)
+    .sort((a, b) => b[1].total - a[1].total)
+    .slice(0, 3)
+    .map(([cat, data]) => ({ category: cat, amount: data.total }));
+
+  // Net Worth (Consolidated) - Current Snapshot
+  const totalBalance = accounts
+    .filter(a => a.accountType === 'debit')
+    .reduce((sum, a) => sum + a.currentBalance, 0);
+    
+  const totalDebt = accounts
+    .filter(a => a.accountType === 'credit')
+    .reduce((sum, a) => sum + a.currentBalance, 0);
+
+  return {
+    accountBalances: accounts.map(a => ({ 
+      name: a.bankName, 
+      balance: a.accountType === 'credit' ? -(a.currentBalance) : a.currentBalance,
+      type: a.accountType
+    })),
+    dailyAverage,
+    topCategories,
+    totalConsolidated: totalBalance - totalDebt,
+    monthlySpending,
+    monthlyIncome,
+    isHistorical,
+    targetLabel: new Date(targetYear, targetMonth).toLocaleDateString('es-ES', { month: 'long', year: 'numeric' })
+  };
+}
